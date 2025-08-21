@@ -1,0 +1,372 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <title>Poor Man's Oscilloscope</title>
+</head>
+<body>
+    <h1 class="header">Poor Man's Oscilloscope (V2)</h1>
+    <p>Oscilloscope</p>
+    <canvas id="oscilloscope"></canvas>
+    <p>Config</p>
+    <div id="configContainer">
+
+        <!-- Websocket Config -->
+        <div id="configContainer-websocket">
+            <p>Data Acquisition</p>
+            <p id="config-websocket-status">Status: Not Connected</p>
+            <form id="configForm-websocket">
+                <input type="url" placeholder="WEBSOCKET URL" id="config-websocket-url">
+                <button type="submit">Connect</button>
+            </form>
+        </div>
+
+        <!-- Oscilloscope Text Config -->
+        <div id="configContainer-oscilloscopeText">
+            <p>Oscilloscope Text Control</p>
+            <input type="checkbox" id="config-oscilloscopeText-showSysInfo"> Show System Information
+	    <br>
+            <input type="checkbox" id="config-oscilloscopeText-showBasicInfo"> Show Basic Information
+        </div>
+
+        <!-- Oscilloscope Display Config-->
+        <div id="configContainer-oscilloscopeDisplay">
+            <p>Oscilloscope Display Control</p>
+            <input type="number" value=1 id="config-oscilloscopeDisplay-timeScale"> Time scale
+            <input type="number" value=0 id="config-oscilloscopeDisplay-timeOffset">-Time Offset
+            <input type="number" value=5 id="config-oscilloscopeDisplay-max"> Max (V)
+            <input type="number" value=0 id="config-oscilloscopeDisplay-min"> Min (V)
+            <input type="number" value=2.5 id="config-oscilloscopeDisplay-trigger"> Trigger (V)
+            <input type="number" value=1000 id="config-oscilloscopeDisplay-resolution"> Resolution
+            <button id="config-oscilloscopeDisplay-apply">Apply Config</button>
+        </div>
+
+        <!-- Resistor Config -->
+        <div id="configContainer-resistor">
+            <p>Resistor Accounting</p>
+            <p>Resistor resistance (Ohm)</p>
+            <input type="number" id="config-resistor-R1" value="1000"> R1
+            <input type="number" id="config-resistor-R2" value="1000"> R2
+            <br>
+            <button id="config-resistor-apply">Apply Config</button>
+        </div>
+    </div>
+
+    <!-- CSS -->
+    <style>
+        
+        p {
+            margin: 0
+        }
+
+        .header {
+            background-color: rgb(80, 176, 255);
+            color: white;
+            margin-bottom: 10px;
+        }
+
+        #oscilloscope {
+            border: 1px solid black;
+            width: 100%;
+            height: 500px
+        }
+
+        #configContainer {
+            display: flex;
+            border: 1px solid black;
+            width: 100%;
+            height: 200px
+        }
+
+        #configContainer-websocket {
+            width: 20%;
+            border: 1px solid black;
+            height: 100%;
+            background-color: rgb(255,220,220);
+        }
+
+        #configContainer-oscilloscopeText,
+        #configContainer-oscilloscopeDisplay,
+        #configContainer-resistor {
+            width: 20%;
+            border: 1px solid black;
+            height: 100%;
+            background-color: rgb(240,255,255);
+        }
+    </style>
+
+    <!-- JS -->
+    <script>
+        // How to calculate Voltage:
+        // Vin = Vadc * (R1 + R2) / R2
+        // To detect over voltage:
+        // (Vadc >= 5)
+
+        const canvas = document.getElementById("oscilloscope");
+        const ctx = canvas.getContext("2d");
+        
+        var connected = false
+        let w = 0;
+        let h = 0;
+
+        let bannerPrioity = 1;
+        let bannerText = "Not Connected";
+
+        // Resistor stuff
+        let R1 = 1000;
+        let R2 = 1000;
+
+        // display config
+        let timeScale = 1;
+        let timeOffset = 0;
+        let trigger = 2.5;
+        let resolution = 1000;
+        let max = 5;
+        let min = 0;
+
+        let voltageData = [];
+	let graphedData = [];
+
+        let pingSum = 0; // ms
+        let pingAmmount = 0;
+        let actualRes = resolution;
+
+        let sampleRateSum = 0;
+        let sampleRateAmmount = 0;
+        let lastSampleTime = 0;
+
+        async function renderGraph() {
+
+            // GRAPH RENDERING!
+
+            // grabbing all revelent data points
+            let start = performance.now();
+            let startTime = start - (timeScale*1000) - (timeOffset*1000);
+            let endTime = start - (timeOffset*1000);
+            let endIndex = voltageData.length-1;
+            pingSum += start - voltageData[endIndex].time;
+            pingAmmount++;
+
+            let timedData = voltageData.slice(voltageData.findIndex(v=>v.time>=startTime),voltageData.findIndex(v=>v.time>=endTime));
+            let renderingData = [];
+
+
+            for (let i=0;i<timedData.length-1;i++) {
+                if (timedData[i].voltage >= trigger) {
+                    renderingData = timedData.slice(i);
+                    break;
+                }
+            }
+	
+	    graphedData = renderingData.map(v => v.voltage);
+
+            // ACTUAL RENDERING
+            actualRes = Math.min(resolution,w)
+
+            let pixelPerPoint = Math.ceil(w/actualRes);
+            let x=0;
+            
+            let plus = Math.ceil(renderingData.length/actualRes);
+            ctx.beginPath();
+            ctx.fillStyle = "rgb(25,25,25)";
+            ctx.fillRect(0,20,w,h-20);
+
+            for (let i=0;i<renderingData.length;i+=plus) {
+
+                let dataPoint = renderingData[i];
+
+                let drawableHeight = h - 20;
+		let normalized = (dataPoint.voltage - min) / (max - min);
+		let y = 20 + ((1 - normalized) * drawableHeight);
+
+                if (i==0) {
+                    ctx.moveTo(x,y)
+                } else {
+                    ctx.lineTo(x,y);
+                }
+                x += pixelPerPoint; 
+            }
+            ctx.strokeStyle = "yellow";
+            ctx.stroke();
+
+            let delta = performance.now() - start;
+            console.log("FPS: "+1000/delta);
+        }
+
+        function renderer() {
+            ctx.font = "20px Arial";
+            let textColor = "white";
+
+            switch (bannerPrioity) {
+                case 0:
+                    ctx.fillStyle = "green";
+                    break;
+                case 1:
+                    ctx.fillStyle = "yellow";
+                    textColor = "black";
+                    break;
+                case 2:
+                    ctx.fillStyle = "orange";
+                    break;
+                case 3:
+                    ctx.fillStyle = "red";
+                    break;
+                default:
+                    ctx.fillStyle = "gray";
+                    break;
+            }
+            ctx.fillRect(0,0,w, 20);
+
+            ctx.fillStyle = textColor;
+            ctx.textAlign = "center";
+            ctx.fillText(bannerText, w/2, 16);
+            ctx.textAlign = "start";
+
+            if (!connected) {
+                ctx.font = "100px Arial";
+                ctx.fillStyle = "red";
+                ctx.fillText("No Connection!", 0, 100);
+            } else {
+                if (voltageData.length > 0) {
+                    renderGraph();
+
+                    let renderingData = [];
+                    if (document.getElementById("config-oscilloscopeText-showSysInfo").checked) {
+                        renderingData.push("actualRes: "+actualRes);
+                        renderingData.push("Ping: "+(pingSum)/pingAmmount);
+                        renderingData.push("Sample Rate: "+parseInt(sampleRateSum/sampleRateAmmount));
+                    }
+
+		    if (document.getElementById("config-oscilloscopeText-showBasicInfo").checked && graphedData != undefined) {
+		    	renderingData.push("Current Voltage: "+voltageData[voltageData.length-1].voltage);
+			renderingData.push("Max Voltage: "+Math.max(...graphedData));
+			renderingData.push("Min Voltage: "+Math.min(...graphedData));
+		    }
+                    let y = 30;
+
+                    ctx.fillStyle = "white";
+                    ctx.font = "15px Arial";
+                    for (let i=0;i<renderingData.length;i++) {
+                        let v=renderingData[i];
+                        ctx.fillText(v,0,y);
+                        y+=15;
+                    }
+                }
+            }
+            requestAnimationFrame(renderer);
+        }
+
+        // Applying settings
+
+        // oscilloscopeDisplay
+        document.getElementById("config-oscilloscopeDisplay-apply").addEventListener("click", () => {
+            timeScale = document.getElementById("config-oscilloscopeDisplay-timeScale").valueAsNumber;
+            timeOffset = document.getElementById("config-oscilloscopeDisplay-timeOffset").valueAsNumber;
+            max = document.getElementById("config-oscilloscopeDisplay-max").valueAsNumber;
+            min = document.getElementById("config-oscilloscopeDisplay-min").valueAsNumber;
+            trigger = document.getElementById("config-oscilloscopeDisplay-trigger").valueAsNumber;
+            resolution = document.getElementById("config-oscilloscopeDisplay-resolution").valueAsNumber;
+        });
+
+        // resistor
+        document.getElementById("config-resistor-apply").addEventListener("click", () => {
+            R1 = document.getElementById("config-resistor-R1").valueAsNumber;
+            R2 = document.getElementById("config-resistor-R2").valueAsNumber;
+        });
+
+        function onResize() {
+            canvas.width = canvas.offsetWidth;
+            canvas.height = canvas.offsetHeight;
+            w = canvas.width
+            h = canvas.height
+            ctx.fillStyle = "rgb(25,25,25)"
+            ctx.fillRect(0,0,w,h)
+        }
+
+        window.addEventListener("resize", onResize)
+        onResize();
+
+        // Websocket Connection
+        document.getElementById("configForm-websocket").addEventListener("submit", function(e) {
+            e.preventDefault();
+            
+            const url = document.getElementById("config-websocket-url").value;
+            try {
+                let errored = false;
+                const ws = new WebSocket(url);
+                // Data Aquisition
+                ws.onmessage = (msg) => {
+                    let raw = msg.data;
+                    let Vadc = (raw/4095)*3.3;
+                    if (Vadc < 5) {
+                        let now = performance.now();
+                        let delta = now - lastSampleTime;
+
+                        if (lastSampleTime > 0 && delta > 0) {
+                            let sampleRate = 1000 / delta; // samples per second
+                            if (isFinite(sampleRate)) {
+                                sampleRateSum += sampleRate;
+                                sampleRateAmmount++;
+                            }
+                        }
+
+                        bannerPrioity = 0;
+                        bannerText = "System OK";
+                        let voltage = Vadc * (R1 + R2) / R2
+                        voltageData.push({
+                            time: performance.now(),
+                            voltage: voltage
+                        });
+
+                        if (voltageData.length >= 1000000) {
+                            voltageData.shift(); // 1,000,000 SAMPLES!
+                        }
+                        lastSampleTime = now;
+                    } else {
+                        bannerPrioity = 3;
+                        bannerText = "OVERVOLTAGE (Consider making the voltage divider stronger)"
+                    }
+                }
+
+                ws.onopen = () => {
+                    document.getElementById("configContainer-websocket").style.backgroundColor = "rgb(220,255,220)";
+                    document.getElementById("config-websocket-status").innerText = "Status: Connected";
+                    connected = true;
+                    bannerPrioity = 0;
+                    bannerText = "System OK";
+                }
+
+                ws.onclose = () => {
+                    if (!errored) {
+                        document.getElementById("configContainer-websocket").style.backgroundColor = "rgb(225,220,220)";
+                        document.getElementById("config-websocket-status").innerText = "Status: Not Connected";
+                        connected = false;
+                        bannerPrioity = 1;
+                        bannerText = "Not Connected";
+                    }
+                    errored = false;
+                }
+
+                ws.onerror = (err) => {
+                    document.getElementById("configContainer-websocket").style.backgroundColor = "rgb(255,220,220)";
+                    document.getElementById("config-websocket-status").innerText = "Status: Error";
+                    bannerPrioity = 2;
+                    bannerText = "Websocket Error";
+                    connected = false;
+                    console.error("Websocket Error:",err);
+                    errored = true;
+                    alert("Websocket Error: "+err.message);
+                }
+
+            } catch(err) {
+                alert("Websocket handler Error: "+err);
+                console.error("Websocket handler Error: "+err);
+            }
+        });
+        renderer();
+
+
+    </script>
+
+</body>
+</html>
