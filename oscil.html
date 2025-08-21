@@ -297,9 +297,9 @@
                 // Data Aquisition
                 ws.onmessage = (msg) => {
                     let raw = msg.data;
-                    let Vadc = (raw/4095)*3.3;
-                    if (Vadc < 5) {
-                        let now = performance.now();
+                    let Vadc = (raw/4095) * 3.3;
+
+                    let now = performance.now();
                         let delta = now - lastSampleTime;
 
                         if (lastSampleTime > 0 && delta > 0) {
@@ -312,6 +312,7 @@
 
                         bannerPrioity = 0;
                         bannerText = "System OK";
+                        
                         let voltage = Vadc * (R1 + R2) / R2
                         voltageData.push({
                             time: performance.now(),
@@ -322,7 +323,8 @@
                             voltageData.shift(); // 1,000,000 SAMPLES!
                         }
                         lastSampleTime = now;
-                    } else {
+
+                    if (Vadc > 5) {
                         bannerPrioity = 3;
                         bannerText = "OVERVOLTAGE (Consider making the voltage divider stronger)"
                     }
